@@ -17,6 +17,8 @@
 		.muted{color:#6b7280}
 		.badge{display:inline-block;padding:2px 6px;border-radius:6px;background:#e2e8f0;font-size:12px}
 		.result{margin-top:12px;padding:10px;border-radius:6px;background:#f1f5f9}
+		.input-error{border:2px solid #e53e3e !important}
+		.error-msg{color:#e53e3e;margin-top:6px}
 	</style>
 </head>
 <body>
@@ -34,9 +36,13 @@
 			</select>
 			<button id="addBtn">添加课程</button>
 			<button id="computeBtn" class="secondary">计算均绩</button>
+			<button id="exportBtn" class="secondary">导出 CSV</button>
+			<button id="importBtn" class="secondary" type="button" style="margin-left:6px">导入 CSV</button>
+			<input id="importFile" type="file" accept="text/csv" style="display:none" />
 		</div>
 
 		<div id="msg" class="muted" style="margin-bottom:6px">添加课程后点击“计算均绩”。挂科（F)、合格制与免修不计入均绩。合格制使用下拉选择 P/F，免修显示 EX。</div>
+		<div id="errorInfo" class="error-msg" style="display:none"></div>
 
 		<table id="courseTable">
 			<thead>
@@ -66,10 +72,92 @@
 			type: document.getElementById('courseType'),
 			addBtn: document.getElementById('addBtn'),
 			computeBtn: document.getElementById('computeBtn'),
+			exportBtn: document.getElementById('exportBtn'),
+			importFile: document.getElementById('importFile'),
+			importBtn: document.getElementById('importBtn'),
 			tbody: document.querySelector('#courseTable tbody'),
 			output: document.getElementById('output'),
 			msg: document.getElementById('msg')
 		};
+
+		function clearFieldErrors(){
+			[els.name, els.score, els.credits, els.type].forEach(el => {
+				el.classList.remove('input-error');
+			});
+			clearErrorMessage();
+		}
+
+		function showFieldErrors(errs){
+			clearFieldErrors();
+			const msgs = [];
+			for(const k in errs){
+				const el = ({name: els.name, score: els.score, credits: els.credits, type: els.type})[k];
+				if(el) el.classList.add('input-error');
+				msgs.push(errs[k]);
+			}
+			setErrorMessage(msgs.join('；'));
+		}
+
+		function setErrorMessage(msg){
+			const d = document.getElementById('errorInfo');
+			d.style.display = msg ? 'block' : 'none';
+			d.textContent = msg || '';
+		}
+
+		function clearErrorMessage(){ setErrorMessage(''); }
+
+		function validateCourseInput(values){
+			const errors = {};
+			const name = values.name.trim();
+			const credits = values.credits.trim();
+			const scoreRaw = values.score.trim();
+			const type = values.type;
+
+			if(!name) errors.name = '课程名不能为空';
+			if(credits === '' || isNaN(credits) || Number(credits) <= 0) errors.credits = '学分需为大于0的数字';
+			if(type === 'normal'){
+				if(scoreRaw === '' || isNaN(scoreRaw) || Number(scoreRaw) < 0 || Number(scoreRaw) > 100){
+					errors.score = '普通课程请输入 0-100 的得分';
+				}
+			}
+
+			return {ok: Object.keys(errors).length === 0, errors, data: {name, scoreRaw, credits: Number(credits), type}};
+		}
+
+		function attemptAddCourse(){
+			clearFieldErrors();
+			const values = {name: els.name.value, score: els.score.value, credits: els.credits.value, type: els.type.value};
+			const res = validateCourseInput(values);
+			if(!res.ok){
+				showFieldErrors(res.errors);
+				return;
+			}
+
+			// validated
+			const type = res.data.type;
+			let scoreToStore = null;
+			let passStatus = null;
+			if(type === 'normal') scoreToStore = Number(res.data.scoreRaw);
+			// push
+			courses.push({name: res.data.name, score: scoreToStore, credits: Number(res.data.credits), type, pass: passStatus});
+			els.name.value = '';
+			els.score.value = '';
+			els.credits.value = '';
+			els.type.value = 'normal';
+			clearFieldErrors();
+			updateView();
+		}
+
+		// Enter key handling on inputs
+		[els.name, els.score, els.credits].forEach(el => {
+			el.addEventListener('keydown', (e) => {
+				if(e.key === 'Enter'){
+					e.preventDefault();
+					attemptAddCourse();
+				}
+			});
+		});
+
 
 		function gpaFromScore(x){
 			x = Number(x);
@@ -233,38 +321,8 @@
 			renderTable(copy);
 		}
 
-		els.addBtn.addEventListener('click', ()=>{
-			const name = els.name.value.trim();
-			const scoreRaw = els.score.value.trim();
-			const credits = els.credits.value.trim();
-			const type = els.type.value;
+		els.addBtn.addEventListener('click', attemptAddCourse);
 
-			// validation
-			if(!name){ alert('请输入课程名'); return; }
-			if(credits === '' || isNaN(credits) || Number(credits) <= 0){ alert('请输入大于0的学分'); return; }
-
-			// 对于普通课程，分数必填且 0-100；合格制/免修不使用输入的数值（合格制用下拉 P/F）
-			let scoreToStore = null;
-			let passStatus = null;
-			if(type === 'normal'){
-				if(scoreRaw === '' || isNaN(scoreRaw) || scoreRaw < 0 || scoreRaw > 100){ alert('普通课程请输入 0-100 的得分'); return; }
-				scoreToStore = Number(scoreRaw);
-			} else if(type === 'passfail'){
-				// ignore provided numeric score for passfail; use select in table to choose P/F
-				scoreToStore = null;
-				passStatus = null;
-			} else {
-				// exempt
-				scoreToStore = null;
-			}
-
-			courses.push({name, score: scoreToStore, credits: Number(credits), type, pass: passStatus});
-			els.name.value = '';
-			els.score.value = '';
-			els.credits.value = '';
-			els.type.value = 'normal';
-			updateView();
-		});
 
 		els.computeBtn.addEventListener('click', ()=>{
 			if(courses.length === 0){ alert('请先添加至少一门课程'); return; }
@@ -300,6 +358,110 @@
 
 			updateView();
 		});
+
+		// CSV helpers
+		function quoteCsv(s){
+			if(s == null) return '';
+			const str = String(s);
+			if(/[,"\n\r]/.test(str)) return '"' + str.replace(/"/g,'""') + '"';
+			return str;
+		}
+
+		function exportCSV(){
+			const header = ['课程名','得分','学分','类型','P/F'];
+			const lines = [header.map(quoteCsv).join(',')];
+			courses.forEach(c => {
+				lines.push([
+					c.name,
+					c.score === null ? '' : c.score,
+					c.credits,
+					c.type,
+					c.pass === null ? '' : c.pass
+				].map(quoteCsv).join(','));
+			});
+			const blob = new Blob([lines.join('\n')], {type:'text/csv;charset=utf-8;'});
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = 'courses.csv';
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			URL.revokeObjectURL(url);
+		}
+
+		function parseCSV(text){
+			const rows = [];
+			let cur = [];
+			let i = 0;
+			let field = '';
+			let inQuotes = false;
+			while(i < text.length){
+				const ch = text[i];
+				if(inQuotes){
+					if(ch === '"'){
+						if(text[i+1] === '"'){ field += '"'; i+=2; continue; }
+						inQuotes = false; i++; continue;
+					}
+					field += ch; i++; continue;
+				}
+				if(ch === '"'){ inQuotes = true; i++; continue; }
+				if(ch === ','){ cur.push(field); field = ''; i++; continue; }
+				if(ch === '\r'){ i++; continue; }
+				if(ch === '\n'){ cur.push(field); rows.push(cur); cur = []; field = ''; i++; continue; }
+				field += ch; i++;
+			}
+			if(inQuotes){ /* malformed but try */ }
+			if(field !== '' || cur.length > 0) cur.push(field);
+			if(cur.length > 0) rows.push(cur);
+			return rows;
+		}
+
+		// wire export/import
+		if(els.exportBtn){
+			els.exportBtn.addEventListener('click', ()=>{
+				exportCSV();
+			});
+		}
+		if(els.importBtn){
+			els.importBtn.addEventListener('click', ()=>{
+				if(els.importFile) els.importFile.click();
+			});
+		}
+		if(els.importFile){
+			els.importFile.addEventListener('change', (ev)=>{
+				const f = ev.target.files && ev.target.files[0];
+				if(!f) return;
+				const reader = new FileReader();
+				reader.onload = (e) => {
+					const txt = e.target.result;
+					const rows = parseCSV(txt);
+					// assume first row is header if contains '课程名'
+					let start = 0;
+					if(rows.length && rows[0].some(cell => /课程名/.test(cell))) start = 1;
+					let imported = 0; let failed = 0; const failMsgs = [];
+					for(let r = start; r < rows.length; r++){
+						const row = rows[r];
+						const name = (row[0] || '').trim();
+						const score = (row[1] || '').trim();
+						const credits = (row[2] || '').trim();
+						const type = (row[3] || 'normal').trim() || 'normal';
+						const pass = (row[4] || '').trim() || null;
+						const v = validateCourseInput({name, score, credits, type});
+						if(!v.ok){ failed++; failMsgs.push(`第${r+1}行: ${Object.values(v.errors).join(';')}`); continue; }
+						let scoreToStore = null;
+						if(type === 'normal') scoreToStore = Number(score);
+						courses.push({name: v.data.name, score: scoreToStore, credits: Number(v.data.credits), type, pass: pass});
+						imported++;
+					}
+					updateView();
+					let msg = `已导入 ${imported} 条记录`;
+					if(failed) msg += `，跳过 ${failed} 条（示例：${failMsgs.slice(0,3).join('；')}）`;
+					setErrorMessage(msg);
+				};
+				reader.readAsText(f, 'utf-8');
+			});
+		}
 
 		// initial render
 		updateView();
