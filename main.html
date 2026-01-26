@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width,initial-scale=1" />
+	<title>绩点计算器</title>
+	<style>
+		body{font-family:Segoe UI, Roboto, Arial;max-width:900px;margin:24px auto;padding:0 16px;color:#222}
+		h1{font-size:20px;margin-bottom:8px}
+		.row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+		input[type="text"], input[type="number"], select{padding:6px 8px;border:1px solid #ccc;border-radius:4px}
+		button{padding:6px 10px;border-radius:6px;border:1px solid #2b6cb0;background:#3182ce;color:white;cursor:pointer}
+		button.secondary{background:#edf2f7;color:#111;border:1px solid #cbd5e0}
+		table{width:100%;border-collapse:collapse;margin-top:12px}
+		th,td{padding:8px;border:1px solid #e2e8f0;text-align:left}
+		th{background:#f7fafc}
+		.muted{color:#6b7280}
+		.badge{display:inline-block;padding:2px 6px;border-radius:6px;background:#e2e8f0;font-size:12px}
+		.result{margin-top:12px;padding:10px;border-radius:6px;background:#f1f5f9}
+	</style>
+</head>
+<body>
+	<h1>绩点计算器</h1>
+
+	<div>
+		<div class="row">
+			<input id="courseName" type="text" placeholder="课程名" style="flex:2" />
+			<input id="courseScore" type="number" placeholder="百分制得分 (0-100)" min="0" max="100" style="width:180px" />
+			<input id="courseCredits" type="number" placeholder="学分" min="0" step="0.5" style="width:100px" />
+			<select id="courseType">
+				<option value="normal">百分制</option>
+				<option value="passfail">合格制（不计入）</option>
+				<option value="exempt">免修（不计入）</option>
+			</select>
+			<button id="addBtn">添加课程</button>
+			<button id="computeBtn" class="secondary">计算均绩</button>
+		</div>
+
+		<div id="msg" class="muted" style="margin-bottom:6px">添加课程后点击“计算均绩”。挂科（F)、合格制与免修不计入均绩。合格制使用下拉选择 P/F，免修显示 EX。</div>
+
+		<table id="courseTable">
+			<thead>
+				<tr>
+					<th>课程名</th>
+					<th>得分</th>
+					<th>学分</th>
+					<th>类型</th>
+					<th>绩点 (GPA)</th>
+					<th>操作</th>
+				</tr>
+			</thead>
+			<tbody></tbody>
+		</table>
+
+		<div id="output" class="result" style="display:none"></div>
+	</div>
+
+	<script>
+		// 数据存储
+		const courses = [];
+
+		const els = {
+			name: document.getElementById('courseName'),
+			score: document.getElementById('courseScore'),
+			credits: document.getElementById('courseCredits'),
+			type: document.getElementById('courseType'),
+			addBtn: document.getElementById('addBtn'),
+			computeBtn: document.getElementById('computeBtn'),
+			tbody: document.querySelector('#courseTable tbody'),
+			output: document.getElementById('output'),
+			msg: document.getElementById('msg')
+		};
+
+		function gpaFromScore(x){
+			x = Number(x);
+			if(isNaN(x) || x < 60) return null; // F or not counted
+			// GPA = 4.0 - 3.0 * (100-x)^2 / 1600
+			const v = 4.0 - 3.0 * Math.pow(100 - x, 2) / 1600;
+			return Math.max(0, v);
+		}
+
+		function renderTable(sortedCourses){
+			// sortedCourses: array to display
+			els.tbody.innerHTML = '';
+			sortedCourses.forEach((c, idx) => {
+				const tr = document.createElement('tr');
+				const gpa = gpaFromScore(c.score);
+				// score display: for passfail/exempt show '-', otherwise show numeric
+				const scoreDisplay = (c.type === 'normal') ? (c.score === null ? '-' : Number(c.score).toFixed(1)) : '-';
+				// gpa display rules:
+				// - normal: numeric GPA or F/— if <60
+				// - passfail: show 'P' if passed, 'F' if failed, '待定' if no score
+				// - exempt: show 'EX'
+				let gpaDisplay = '';
+				if(c.type === 'exempt'){
+					gpaDisplay = '<span>EX</span>';
+				} else if(c.type === 'passfail'){
+					// placeholder - we'll render a select control below for passfail rows
+					gpaDisplay = '';
+				} else {
+					gpaDisplay = (gpa === null) ? '<span class="muted">F/—</span>' : Number(gpa).toFixed(3);
+				}
+
+				tr.innerHTML = `
+					<td>${escapeHtml(c.name || '')}</td>
+					<td class="scoreCell" data-idx="${idx}" data-type="${c.type}">${scoreDisplay}</td>
+					<td>${Number(c.credits)}</td>
+					<td>${typeLabel(c.type)}</td>
+					<td class="gpaCell" data-idx="${idx}" data-type="${c.type}">${gpaDisplay}</td>
+					<td><button data-idx="${idx}" class="del">删除</button></td>
+				`;
+				els.tbody.appendChild(tr);
+
+				// Inline edit: allow editing only for normal courses
+				const scoreCell = tr.querySelector('.scoreCell');
+				const gpaCell = tr.querySelector('.gpaCell');
+				const attachEdit = (cell) => {
+					cell.addEventListener('click', (ev) => {
+						// only normal courses editable now
+						if(c.type !== 'normal') return;
+						// avoid creating multiple inputs
+						if(cell.querySelector('input')) return;
+
+						const input = document.createElement('input');
+						input.type = 'number';
+						input.min = 0;
+						input.max = 100;
+						input.placeholder = '0-100';
+						input.style.width = '80px';
+						input.className = 'inlineScore';
+						// prefill for normal if score exists
+						if(c.score !== null) input.value = c.score;
+						cell.innerHTML = '';
+						cell.appendChild(input);
+						input.focus();
+
+						const finish = () => {
+							const val = input.value.trim();
+							if(val === ''){ alert('普通课程需填写得分'); input.focus(); return; }
+							const num = Number(val);
+							if(isNaN(num) || num < 0 || num > 100){ alert('请输入 0-100 的有效得分'); input.focus(); return; }
+							const target = sortedCourses[idx];
+							const origIndex = courses.indexOf(target);
+							if(origIndex >= 0){ courses[origIndex].score = num; }
+							updateView();
+						};
+
+						input.addEventListener('blur', finish);
+						input.addEventListener('keydown', (e)=>{
+							if(e.key === 'Enter'){ finish(); }
+							else if(e.key === 'Escape'){ updateView(); }
+						});
+					});
+				};
+
+				if(scoreCell) attachEdit(scoreCell);
+
+				// For passfail rows, render a select (P/F/待定) in the GPA cell
+				if(c.type === 'passfail' && gpaCell){
+					const sel = document.createElement('select');
+					const optEmpty = document.createElement('option'); optEmpty.value = ''; optEmpty.text = '待定';
+					const optP = document.createElement('option'); optP.value = 'P'; optP.text = 'P';
+					const optF = document.createElement('option'); optF.value = 'F'; optF.text = 'F';
+					sel.appendChild(optEmpty);
+					sel.appendChild(optP);
+					sel.appendChild(optF);
+					// ensure course has a .pass field
+					if(typeof c.pass === 'undefined') c.pass = null;
+					sel.value = c.pass === null ? '' : c.pass;
+					sel.addEventListener('change', () => {
+						const val = sel.value;
+						const target = sortedCourses[idx];
+						const origIndex = courses.indexOf(target);
+						if(origIndex >= 0){
+							courses[origIndex].pass = val === '' ? null : val;
+							// keep score null for passfail
+							courses[origIndex].score = null;
+						}
+						updateView();
+					});
+					gpaCell.innerHTML = '';
+					gpaCell.appendChild(sel);
+				}
+			});
+
+			// attach delete handlers
+			els.tbody.querySelectorAll('.del').forEach(btn => {
+				btn.addEventListener('click', e => {
+					const i = Number(btn.getAttribute('data-idx'));
+					// find and remove the corresponding course in the original array by identity
+					const target = sortedCourses[i];
+					const origIndex = courses.indexOf(target);
+					if(origIndex >= 0) courses.splice(origIndex, 1);
+					updateView();
+				});
+			});
+		}
+
+		function typeLabel(t){
+			if(t === 'normal') return '百分制';
+			if(t === 'passfail') return '合格制';
+			return '免修';
+		}
+
+		function escapeHtml(s){
+			return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[ch]);
+		}
+
+		function updateView(){
+			// Custom sort:
+			// 0: exempt (top)
+			// 1: normal with GPA (passed normal courses), sorted by GPA desc
+			// 2: passfail (合格制)
+			// 3: normal failing (挂科) (bottom)
+			const copy = courses.slice();
+			copy.sort((a,b)=>{
+				function rank(c){
+					if(c.type === 'exempt') return 0;
+					const g = gpaFromScore(c.score);
+					if(c.type === 'normal' && g !== null) return 1;
+					if(c.type === 'passfail') return 2;
+					return 3;
+				}
+				const ra = rank(a), rb = rank(b);
+				if(ra !== rb) return ra - rb;
+				// same rank: if rank 1 sort by GPA desc
+				if(ra === 1){
+					return gpaFromScore(b.score) - gpaFromScore(a.score);
+				}
+				// otherwise keep insertion order
+				return 0;
+			});
+			renderTable(copy);
+		}
+
+		els.addBtn.addEventListener('click', ()=>{
+			const name = els.name.value.trim();
+			const scoreRaw = els.score.value.trim();
+			const credits = els.credits.value.trim();
+			const type = els.type.value;
+
+			// validation
+			if(!name){ alert('请输入课程名'); return; }
+			if(credits === '' || isNaN(credits) || Number(credits) <= 0){ alert('请输入大于0的学分'); return; }
+
+			// 对于普通课程，分数必填且 0-100；合格制/免修不使用输入的数值（合格制用下拉 P/F）
+			let scoreToStore = null;
+			let passStatus = null;
+			if(type === 'normal'){
+				if(scoreRaw === '' || isNaN(scoreRaw) || scoreRaw < 0 || scoreRaw > 100){ alert('普通课程请输入 0-100 的得分'); return; }
+				scoreToStore = Number(scoreRaw);
+			} else if(type === 'passfail'){
+				// ignore provided numeric score for passfail; use select in table to choose P/F
+				scoreToStore = null;
+				passStatus = null;
+			} else {
+				// exempt
+				scoreToStore = null;
+			}
+
+			courses.push({name, score: scoreToStore, credits: Number(credits), type, pass: passStatus});
+			els.name.value = '';
+			els.score.value = '';
+			els.credits.value = '';
+			els.type.value = 'normal';
+			updateView();
+		});
+
+		els.computeBtn.addEventListener('click', ()=>{
+			if(courses.length === 0){ alert('请先添加至少一门课程'); return; }
+
+			// compute weighted average excluding: type != normal OR score<60
+			let totalCredits = 0;
+			let weighted = 0;
+			let count = 0;
+
+			courses.forEach(c => {
+				if(c.type !== 'normal') return; // exclude 合格制、免修
+				const g = gpaFromScore(c.score);
+				if(g === null) return; // exclude F
+				totalCredits += Number(c.credits);
+				weighted += g * Number(c.credits);
+				count += 1;
+			});
+
+			if(totalCredits === 0){
+				els.output.style.display = 'block';
+				els.output.innerHTML = '<strong>无有效课程用于计算均绩（所有课程均为挂科/合格制/免修）。</strong>';
+				updateView();
+				return;
+			}
+
+			const avg = weighted / totalCredits;
+
+			els.output.style.display = 'block';
+			els.output.innerHTML = `
+				<div><strong>平均绩点 (加权)：</strong> ${avg.toFixed(3)}</div>
+				<div class="muted">合并学分：${totalCredits}，计入门数：${count}</div>
+			`;
+
+			updateView();
+		});
+
+		// initial render
+		updateView();
+	</script>
+</body>
+</html>
